@@ -43,6 +43,7 @@ void print_grid_function(Rreg rules[], int size, int grid_size, int (*funct)(int
                 if( rules[k].x1 <= i && rules[k].x2 >= i && rules[k].y1 <= j && rules[k].y2 >= j ){
                     if(rules[k].state == 'o') t = 'O';
                     else t = 'F';
+                    break;
                 }
                 else
                     t = gradient[funct(i,j)*presision];
@@ -69,9 +70,9 @@ int main(){
     Rreg rules[] = {rule1, rule2};
 
     //displing the rules (for now wth the complexisty of n^3 yuck!)
-    //print_grid_flat(rules, sizeof(rules)/sizeof(rules[0]), 100);
+    print_grid_flat(rules, sizeof(rules)/sizeof(rules[0]), 100);
 
     //using some baground, needs refinment
-    print_grid_function(rules, 2, 100, sample_funct, 1); // problem --> this is only printing rules[1] 
+    print_grid_function(rules, 2, 100, sample_funct, 1); 
     return 0;
 }
