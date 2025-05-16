@@ -3,8 +3,7 @@
 #include<math.h>
 
 //a rectangula region
-typedef struct rectangular_region
-{
+typedef struct rectangular_region{
     char state;
     int x1;
     int x2;
@@ -12,43 +11,56 @@ typedef struct rectangular_region
     int y2; 
 }Rreg;
 
+typedef struct moving_object{
+    char type[];
+    int x;
+    int y;
+}movobj;
+
 // Function to print the layout with regions
 
 void print_grid_flat(Rreg rules[], int size, int grid_size){
-    char t;
     for(int i = 0; i <= grid_size; i++){
         for(int j = 0; j <= grid_size; j++){
-            t = ' ';
-            for(int k = 0; k < size; k++)
-                if( rules[k].x1 <= i && rules[k].x2 >= i && rules[k].y1 <= j && rules[k].y2 >= j )
-                    if(rules[k].state == 'o') t = 'O';
-                    else t = 'F';  
-            printf("%c",t);
+            for(int k = 0; k < size; k++){
+                if( rules[k].x1 <= i && rules[k].x2 >= i && rules[k].y1 <= j && rules[k].y2 >= j ){
+                    if(rules[k].state == 'o')
+                        printf("%s%c", "\033[31m",'O');
+                    else
+                       printf("%s%c", "\033[35m",'F');  
+                }
+                else
+                    printf("\033[0m"); 
+            }
         }
         printf("\n");
     }
 }
 
-void print_grid_document(Rreg rules[], int size, char a[]){
+void print_grid_doc(Rreg rules[], int size, char a[]){
 
 }
 
 void print_grid_function(Rreg rules[], int size, int grid_size, int (*funct)(int, int), int presision){
-    char gradient[] = " .:-=+*#$@";
-    char t;
+    const char gradient[] = " .:-=+*#$@";
+
     for(int i = 0; i <= grid_size; i++){
         for(int j = 0; j <= grid_size; j++){
-            t = ' ';
+            int flag = 0;
             for(int k = 0; k < size; k++){
                 if( rules[k].x1 <= i && rules[k].x2 >= i && rules[k].y1 <= j && rules[k].y2 >= j ){
-                    if(rules[k].state == 'o') t = 'O';
-                    else t = 'F';
-                    break;
+                    if(rules[k].state == 'o'){
+                        printf("%s%c", "\033[31m",'O'); flag = 1;}
+                    else{
+                       printf("%s%c", "\033[35m",'F');  flag = 1;}
                 }
-                else
-                    t = gradient[funct(i,j)*presision];
             }
-            printf("%c",t);
+            if(flag == 0){
+                    if(funct(i,j)*presision < 10)
+                        printf("%c\033[37m",gradient[funct(i,j)*presision]);
+                    else
+                        printf("\033[37mE"); 
+                }
         }
         printf("\n");
     }
@@ -56,10 +68,13 @@ void print_grid_function(Rreg rules[], int size, int grid_size, int (*funct)(int
 
 
 int sample_funct(int a, int b){
-    return ((a*a+b*b)/1000);
+    return ((a*b+b)/10);
 }
 
 int main(){
+
+    movobj fight1 = {"airoplane","2","3"};
+    movobj flight2 = {"airoplane", "5", "6"};
 
     //definig each rule/rectangualr region
     Rreg rule1 = {'o', 20, 60, 4, 10};        //defines a rectangular region with x1,x2 and y1,y2 (for now n=by the 4th quadrent)
@@ -69,10 +84,10 @@ int main(){
     // collection of rules/rectangual regions
     Rreg rules[] = {rule1, rule2};
 
-    //displing the rules (for now wth the complexisty of n^3 yuck!)
-    print_grid_flat(rules, sizeof(rules)/sizeof(rules[0]), 100);
+    //displing the rules 
+    print_grid_flat(rules, sizeof(rules)/sizeof(rules[0]), 50);
 
-    //using some baground, needs refinment
-    print_grid_function(rules, 2, 100, sample_funct, 1); 
+    //using some background, needs refinment
+    print_grid_function(rules, 2, 50, sample_funct, 1); 
     return 0;
 }
