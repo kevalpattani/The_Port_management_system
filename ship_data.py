@@ -5,10 +5,11 @@ import random
 import json
 import requests # Import the requests library for API calls
 import math # Import math for circular positioning
+import time # For message polling timer
+import collections # For deque
 
 # --- Pygame Initialization ---
 pygame.init()
-
 
 # --- Constants ---
 SCREEN_WIDTH = 1200
@@ -58,9 +59,12 @@ LIGHT_GREEN_ZONE_DIST_PX = 400
 DELETE_ZONE_RECT = pygame.Rect(SCREEN_WIDTH - 200, 0, 200, 100)
 
 # --- API Configuration ---
-# IMPORTANT: Replace this with the actual URL of your deployed Heroku app's /log_event endpoint
-API_URL = "http://YOUR_LOCAL_IP/log_event"
-
+# IMPORTANT: Replace this with the actual URL of your FastAPI server
+# If running locally on the same machine: http://127.0.0.1:8000
+# If running on a different machine on your local Wi-Fi (e.g., 172.16.3.228): http://172.16.3.228:8000
+BASE_API_URL = "http://127.0.0.1:8000"
+LOG_EVENT_API_URL = f"{BASE_API_URL}/log_event"
+GET_MESSAGES_API_URL = f"{BASE_API_URL}/get_messages_for_pygame"
 
 # --- Game Setup ---
 screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
@@ -343,7 +347,7 @@ class AddShipDialog:
             if pygame.time.get_ticks() - self.error_timer > 3000: # Clear error after 3 seconds
                 self.error_message = ""
 
-# --- NEW: Emergency Message Dialog Class ---
+# --- Emergency Message Dialog Class ---
 class EmergencyMessageDialog:
     def __init__(self, x, y, width, height, font, on_send_callback, on_cancel_callback):
         self.rect = pygame.Rect(x, y, width, height)
@@ -351,7 +355,6 @@ class EmergencyMessageDialog:
         self.on_send_callback = on_send_callback
         self.on_cancel_callback = on_cancel_callback
 
-        # Changed initial_text to empty string as requested
         self.message_input = TextInputBox(x + 20, y + 60, width - 40, 60, font, initial_text='')
         self.send_button = Button(x + width - 120, y + height - 40, 100, 30, "Send", RED, (150,0,0), action=self._send)
         self.cancel_button = Button(x + width - 230, y + height - 40, 100, 30, "Cancel", LIGHT_GREY, DARK_GREY, action=self._cancel)
@@ -403,7 +406,6 @@ class EmergencyMessageDialog:
             surface.blit(error_surface, (self.rect.x + 20, self.rect.y + self.rect.height - 60))
             if pygame.time.get_ticks() - self.error_timer > 3000: # Clear error after 3 seconds
                 self.error_message = ""
-
 
 # --- Ship Class ---
 class Ship(pygame.sprite.Sprite):
@@ -459,7 +461,7 @@ class Ship(pygame.sprite.Sprite):
     def drag(self, mouse_pos):
         if self.is_dragging:
             self.rect.x = mouse_pos[0] + self.offset_x
-            self.rect.y = mouse_pos[1] + self.offset_y
+            self.rect.y = mouse_pos[1] + self.offset_y # Corrected line
             self.update_speed_and_zone()
 
     def update_speed_and_zone(self):
@@ -532,7 +534,7 @@ class Ship(pygame.sprite.Sprite):
         if prev_zone != self.current_zone:
             # Only send zone_change if it's not the initial parking event
             # or if it's specifically transitioning *out* of parked state
-            if self.current_zone != "Parked" or prev_zone == "Parked": # This condition was slightly off. It should be if prev_zone was "Parked"
+            if self.current_zone != "Parked" or prev_zone == "Parked":
                 self.send_api_data("zone_change")
                 print(f"Ship {self.name} entered {self.current_zone}")
 
@@ -565,8 +567,8 @@ class Ship(pygame.sprite.Sprite):
 
     def send_api_data(self, event_type, additional_data=None):
         """
-        Sends ship event data to the Flask API server.
-        event_type: A string describing the type of event (e.g., "zone_change", "docked", "undocked", "ship_deleted").
+        Sends ship event data to the FastAPI server.
+        event_type: A string describing the type of event (e.g., "zone_change", "docked", "undocked", "ship_deleted", "emergency").
         additional_data: Optional dictionary for event-specific data.
         """
         payload = {
@@ -584,9 +586,9 @@ class Ship(pygame.sprite.Sprite):
             payload.update(additional_data) # Add any specific data for the event
 
         try:
-            response = requests.post(API_URL, json=payload)
+            response = requests.post(LOG_EVENT_API_URL, json=payload, timeout=1) # Added timeout
             response.raise_for_status() # Raise an exception for HTTP errors (4xx or 5xx)
-            print(f"API call successful for {event_type} (Ship ID: {self.ship_id}): {response.json()}")
+            # print(f"API call successful for {event_type} (Ship ID: {self.ship_id}): {response.json()}")
         except requests.exceptions.RequestException as e:
             print(f"API call failed for {event_type} (Ship ID: {self.ship_id}): {e}")
 
@@ -618,7 +620,7 @@ for i in range(TERMINAL_COUNT):
 next_ship_id = 1
 all_ship_data = [] # List of dictionaries holding all ship data (active or not)
 
-# --- Function Definitions (Moved to before UI element initialization) ---
+# --- Function Definitions ---
 def add_new_random_ship_data():
     """Generates and adds a new ship with random data."""
     global next_ship_id
@@ -692,34 +694,34 @@ def on_cancel_add_ship():
 emergency_message_dialog = None
 is_emergency_dialog_active = False
 
-# This is the global emergency callback (for the main control panel button)
-def on_send_emergency_message_global(message):
-    global is_emergency_dialog_active, emergency_message_dialog
-    # This is where the API call for the emergency message happens
-    payload = {
-        "event_type": "emergency_message_global", # Distinct event type for global emergency
-        "message": message,
-        "timestamp": datetime.datetime.now().isoformat()
-    }
-    try:
-        response = requests.post(API_URL, json=payload)
-        response.raise_for_status()
-        print(f"Global Emergency API call successful: {response.json()}")
-    except requests.exceptions.RequestException as e:
-        print(f"Global Emergency API call failed: {e}")
+# Unified emergency message handler
+def on_send_emergency_message_unified(message_content):
+    global is_emergency_dialog_active, emergency_message_dialog, selected_ship_on_map
+    
+    if selected_ship_on_map:
+        # Ship-specific emergency
+        selected_ship_on_map.send_api_data("emergency", {
+            "message": message_content
+        })
+        print(f"Ship-specific emergency sent for {selected_ship_on_map.name}: {message_content}")
+    else:
+        # Global emergency
+        payload = {
+            "ship_id": 0, # Use 0 or a special ID for global messages
+            "ship_name": "GLOBAL",
+            "current_zone": "N/A",
+            "current_speed_kmh": 0.0,
+            "timestamp": datetime.datetime.now().isoformat(),
+            "event_type": "emergency_global", # Distinct event type for global emergency
+            "message": message_content
+        }
+        try:
+            response = requests.post(LOG_EVENT_API_URL, json=payload, timeout=1)
+            response.raise_for_status()
+            print(f"Global Emergency API call successful: {response.json()}")
+        except requests.exceptions.RequestException as e:
+            print(f"Global Emergency API call failed: {e}")
 
-    is_emergency_dialog_active = False
-    emergency_message_dialog = None
-
-# This is the callback for the emergency button within the ship edit panel
-def on_send_emergency_message_for_ship(message, ship_obj):
-    global is_emergency_dialog_active, emergency_message_dialog
-    # Use the ship's own send_api_data method
-    ship_obj.send_api_data("emergency_message_ship_specific", {
-        "message": message,
-        "affected_ship_id": ship_obj.ship_id,
-        "affected_ship_name": ship_obj.name
-    })
     is_emergency_dialog_active = False
     emergency_message_dialog = None
 
@@ -728,31 +730,15 @@ def on_cancel_emergency_message():
     is_emergency_dialog_active = False
     emergency_message_dialog = None
 
-# Function to activate the global emergency dialog
-def activate_global_emergency_dialog():
+# Function to activate the unified emergency dialog
+def activate_unified_emergency_dialog():
     global is_emergency_dialog_active, emergency_message_dialog
     is_emergency_dialog_active = True
     emergency_message_dialog = EmergencyMessageDialog(
         SCREEN_WIDTH // 2 - 200, SCREEN_HEIGHT // 2 - 100, 400, 200, font,
-        on_send_emergency_message_global, on_cancel_emergency_message
+        on_send_emergency_message_unified, on_cancel_emergency_message
     )
     return True
-
-# Function to activate the ship-specific emergency dialog
-def activate_ship_emergency_dialog():
-    global is_emergency_dialog_active, emergency_message_dialog, selected_ship_on_map
-    if selected_ship_on_map:
-        is_emergency_dialog_active = True
-        # Pass a lambda function as callback to capture selected_ship_on_map
-        emergency_message_dialog = EmergencyMessageDialog(
-            SCREEN_WIDTH // 2 - 200, SCREEN_HEIGHT // 2 - 100, 400, 200, font,
-            lambda msg: on_send_emergency_message_for_ship(msg, selected_ship_on_map),
-            on_cancel_emergency_message
-        )
-        return True
-    else:
-        print("No ship selected for emergency message.")
-        return False
 
 
 # UI Elements positions within the Control Panel
@@ -762,9 +748,8 @@ add_ship_button = Button(CONTROL_PANEL_X + 15, add_ship_button_y, 120, 35, "Add 
 ship_dropdown_y = add_ship_button.rect.y + add_ship_button.rect.height + 10
 ship_dropdown = Dropdown(CONTROL_PANEL_X + 15, ship_dropdown_y, 250, 40, [])
 
-# Global Emergency Button
-emergency_button_y = ship_dropdown.rect.y + ship_dropdown.rect.height + 10
-emergency_button = Button(CONTROL_PANEL_X + 15, emergency_button_y, 120, 35, "Emergency (Global)", RED, (150,0,0), action=activate_global_emergency_dialog)
+# Removed the separate 'emergency_button' (Global)
+# The 'emergency_button_edit_ship' will now be the unified button.
 
 
 # Initial ships (now called after functions and UI elements are defined)
@@ -778,8 +763,41 @@ speed_down_button = Button(0, 0, 80, 30, "- Speed", RED, (150,0,0))
 arrival_time_plus_button = Button(0, 0, 120, 30, "+ 20 Mins", YELLOW, ORANGE)
 arrival_time_minus_button = Button(0, 0, 120, 30, "- 20 Mins", YELLOW, ORANGE)
 remove_from_terminal_button = Button(0, 0, 90, 30, "Undock", BLUE, (0,0,150))
-# NEW: Emergency Button for Edit Ship Block
-emergency_button_edit_ship = Button(0, 0, 100, 30, "Emergency", RED, (150,0,0), action=activate_ship_emergency_dialog)
+# Unified Emergency Button for Edit Ship Block (will also handle global if no ship selected)
+emergency_button_unified = Button(0, 0, 100, 30, "Emergency", RED, (150,0,0), action=activate_unified_emergency_dialog)
+
+# --- Pygame Message Display ---
+pygame_message_queue = collections.deque() # Queue for messages from C client
+MESSAGE_DISPLAY_DURATION = 5000 # milliseconds
+last_message_display_time = 0
+current_display_message = None
+
+def display_pygame_message(message_text):
+    global current_display_message, last_message_display_time
+    current_display_message = message_text
+    last_message_display_time = pygame.time.get_ticks()
+
+def poll_for_c_client_messages():
+    global pygame_message_queue
+    try:
+        response = requests.get(GET_MESSAGES_API_URL, timeout=1)
+        response.raise_for_status()
+        data = response.json()
+        if data and data.get("messages"):
+            for msg_entry in data["messages"]:
+                source = msg_entry.get("source", "Unknown")
+                timestamp = msg_entry.get("timestamp", "N/A")
+                content = msg_entry.get("content", "No content")
+                full_message = f"C-Client Message ({source} @ {timestamp}): {content}"
+                pygame_message_queue.append(full_message)
+                print(f"Pygame received new message for display: {full_message}")
+    except requests.exceptions.RequestException as e:
+        # print(f"Error polling for C client messages: {e}") # Suppress frequent errors
+        pass # Keep silent if server is not reachable for messages
+
+# Timer for polling C client messages
+MESSAGE_POLL_EVENT = pygame.USEREVENT + 1
+pygame.time.set_timer(MESSAGE_POLL_EVENT, 1000) # Poll every 1000ms (1 second)
 
 
 # --- Game Loop ---
@@ -788,6 +806,11 @@ while running:
     for event in pygame.event.get():
         if event.type == pygame.QUIT:
             running = False
+
+        if event.type == MESSAGE_POLL_EVENT:
+            poll_for_c_client_messages()
+            if pygame_message_queue and not current_display_message:
+                display_pygame_message(pygame_message_queue.popleft())
 
         # If any dialog is active, only handle its events
         if is_add_ship_dialog_active and add_ship_dialog:
@@ -827,8 +850,7 @@ while running:
                         active_ships.add(new_ship)
                         all_sprites.add(new_ship)
                         
-                        # --- NEW LOGIC HERE: Remove from all_ship_data and update dropdown ---
-                        # Find and remove the spawned ship's data from all_ship_data
+                        # Remove from all_ship_data and update dropdown
                         for i, s_data in enumerate(all_ship_data):
                             if s_data['ship_id'] == selected_ship_data['ship_id']:
                                 all_ship_data.pop(i)
@@ -852,8 +874,7 @@ while running:
 
         # Handle Add Ship button
         add_ship_button.handle_event(event)
-        # Handle Global Emergency Button
-        emergency_button.handle_event(event)
+        # The global emergency button is removed, its functionality is now merged into the unified one.
 
 
         # Handle mouse events for dragging ships
@@ -911,15 +932,14 @@ while running:
             
             # Update button hover states
             add_ship_button.handle_event(event)
-            emergency_button.handle_event(event) # Handle hover for global emergency button
+            # emergency_button.handle_event(event) # Removed global emergency button
             if selected_ship_on_map:
                 speed_up_button.handle_event(event)
                 speed_down_button.handle_event(event)
                 arrival_time_plus_button.handle_event(event)
                 arrival_time_minus_button.handle_event(event)
                 remove_from_terminal_button.handle_event(event)
-                emergency_button_edit_ship.handle_event(event) # NEW: Handle hover for edit ship emergency button
-
+                emergency_button_unified.handle_event(event) # Now this handles both
 
         # Handle edit panel buttons (only if a ship is selected)
         if selected_ship_on_map:
@@ -985,7 +1005,7 @@ while running:
                 else:
                     print("Selected ship is not parked, or no ship is selected.")
             
-            emergency_button_edit_ship.handle_event(event) # Handle click for edit ship emergency button
+            emergency_button_unified.handle_event(event) # Now this handles both
 
 
     # --- Update Game State ---
@@ -1012,7 +1032,7 @@ while running:
     # Dark Green to Red gradient (from DARK_GREEN_ZONE_DIST_PX down to RED_ZONE_DIST_PX)
     if DARK_GREEN_ZONE_DIST_PX > RED_ZONE_DIST_PX: # Ensure valid range
         for r in range(DARK_GREEN_ZONE_DIST_PX, RED_ZONE_DIST_PX -1, -5): # Step by 5 pixels
-            factor = (r - RED_ZONE_DIST_PX) / (DARK_GREEN_ZONE_DIST_PX - RED_ZONE_DIST_PX) # Corrected typo here
+            factor = (r - RED_ZONE_DIST_PX) / (DARK_GREEN_ZONE_DIST_PX - RED_ZONE_DIST_PX) # Corrected line
             color = interpolate_color(RED, DARK_GREEN, factor) # interpolate from inner to outer color
             pygame.draw.circle(screen, color, (port_center_x, port_center_y), r, 0) # Filled circle
 
@@ -1076,7 +1096,7 @@ while running:
     # Draw UI elements within the control panel
     add_ship_button.draw(screen) 
     ship_dropdown.draw(screen) 
-    emergency_button.draw(screen) # Draw Global Emergency Button
+    # Removed the global emergency button here.
 
     # Draw Incoming Ships Timetable (now moved to the bottom section of the control panel)
     timetable_height = 200 # Fixed height for the timetable
@@ -1110,7 +1130,7 @@ while running:
         edit_panel_y = timetable_rect.y - edit_panel_height - 10 # 10 pixels above timetable
         
         # Ensure it doesn't overlap with the dropdown or add ship button
-        min_edit_panel_y = emergency_button.rect.y + emergency_button.rect.height + 10 # Adjusted to be below global emergency button
+        min_edit_panel_y = ship_dropdown.rect.y + ship_dropdown.rect.height + 10 # Adjusted to be below dropdown
         if edit_panel_y < min_edit_panel_y:
             edit_panel_y = min_edit_panel_y
             # If it's forced down, adjust its height if necessary to fit
@@ -1133,15 +1153,19 @@ while running:
         arrival_time_plus_button.rect.topleft = (edit_panel_rect.x + 10, edit_panel_rect.y + 80)
         arrival_time_minus_button.rect.topleft = (edit_panel_rect.x + 140, edit_panel_rect.y + 80)
         remove_from_terminal_button.rect.topleft = (edit_panel_rect.x + 10, edit_panel_rect.y + 120) # Moved down
-        emergency_button_edit_ship.rect.topleft = (edit_panel_rect.x + 120, edit_panel_rect.y + 120) # NEW: Position for edit ship emergency button
+        emergency_button_unified.rect.topleft = (edit_panel_rect.x + 120, edit_panel_rect.y + 120) # Position for unified emergency button
 
         speed_up_button.draw(screen)
         speed_down_button.draw(screen)
         arrival_time_plus_button.draw(screen)
         arrival_time_minus_button.draw(screen)
         remove_from_terminal_button.draw(screen)
-        emergency_button_edit_ship.draw(screen) # NEW: Draw Emergency Button for Edit Ship Block
-    
+        emergency_button_unified.draw(screen) # Draw Unified Emergency Button
+    else: # If no ship is selected, draw the unified emergency button in the main control panel area
+        emergency_button_unified.rect.topleft = (CONTROL_PANEL_X + 15, ship_dropdown.rect.y + ship_dropdown.rect.height + 10)
+        emergency_button_unified.draw(screen)
+
+
     # Draw Add Ship Dialog last, so it's on top
     if is_add_ship_dialog_active and add_ship_dialog:
         add_ship_dialog.draw(screen)
@@ -1149,6 +1173,22 @@ while running:
     # Draw Emergency Message Dialog last, so it's on top
     if is_emergency_dialog_active and emergency_message_dialog:
         emergency_message_dialog.draw(screen)
+
+    # --- Draw C Client Message Popup ---
+    if current_display_message:
+        message_surface = large_font.render(current_display_message, True, BLACK)
+        message_rect = message_surface.get_rect(center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT - 50))
+        
+        # Background for the message
+        bg_rect = message_rect.inflate(20, 10) # Add padding
+        pygame.draw.rect(screen, YELLOW, bg_rect, border_radius=10)
+        pygame.draw.rect(screen, BLACK, bg_rect, 2, border_radius=10)
+        
+        screen.blit(message_surface, message_rect)
+
+        # Clear message after duration
+        if pygame.time.get_ticks() - last_message_display_time > MESSAGE_DISPLAY_DURATION:
+            current_display_message = None
 
 
     pygame.display.flip()
